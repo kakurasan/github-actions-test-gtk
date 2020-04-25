@@ -1,0 +1,97 @@
+name: Build test
+
+env:
+  BUILDDIR: /tmp/_build
+  DESTDIR: /tmp/_dest
+  OUTDIR: /tmp/output.d
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        name: [
+          macos-latest-clang,
+          macos-latest-gcc,
+          ubuntu-latest-clang,
+          ubuntu-latest-gcc,
+        ]
+        include:
+          - name: macos-latest-clang
+            os: macos-latest
+            compiler: clang
+          - name: macos-latest-gcc
+            os: macos-latest
+            compiler: gcc-9
+          - name: ubuntu-latest-clang
+            os: ubuntu-latest
+            compiler: clang
+          - name: ubuntu-latest-gcc
+            os: ubuntu-latest
+            compiler: gcc
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v1
+        with:
+          python-version: '3.x'
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+             brew install fakeroot gtk+3 ninja pkgconfig
+             echo "::add-path::/usr/local/opt/gettext/bin"
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+             sudo apt -q update
+             sudo apt -q install --no-install-recommends gettext libgtk-3-dev ninja-build
+      - name: Install Meson
+        run: pip install meson
+      - name: Set environment variables
+        run: |
+             compiler = "${{ matrix.compiler }}"
+             if compiler.startswith("gcc"):
+                 version = compiler[3:]
+                 print("::set-env name=CC::gcc" + version)
+                 print("::set-env name=CXX::g++" + version)
+             elif compiler.startswith("clang"):
+                 version = compiler[5:]
+                 print("::set-env name=CC::clang" + version)
+                 print("::set-env name=CXX::clang++" + version)
+        shell: python
+      - name: Configure
+        run: meson --prefix=/usr --unity=on $BUILDDIR
+      - name: Build
+        run: ninja -vC $BUILDDIR
+      - name: Install
+        run: ninja -vC $BUILDDIR install
+      - name: Make binary .tar.xz files
+        run: |
+             mkdir $OUTDIR
+             cd $DESTDIR
+             fakeroot tar Jcvf \
+               $OUTDIR/${{ github.event_name }}-${{ github.sha }}-bin-${{ matrix.os }}-${{ matrix.compiler }}.tar.xz .
+             strip usr/bin/*
+             fakeroot tar Jcvf \
+               $OUTDIR/${{ github.event_name }}-${{ github.sha }}-bin-${{ matrix.os }}-${{ matrix.compiler }}-stripped.tar.xz .
+      - uses: actions/upload-artifact@v1
+        with:
+          name: ${{ github.event_name }}-${{ github.sha }}-bin-${{ matrix.os }}-${{ matrix.compiler }}
+          path: ${{ env.OUTDIR }}
+      - name: Make source dist file
+        run: fakeroot ninja -vC $BUILDDIR dist
+      - uses: actions/upload-artifact@v1
+        with:
+          name: ${{ github.event_name }}-${{ github.sha }}-dist-${{ matrix.os }}
+          path: ${{ env.BUILDDIR }}/meson-dist
+      - name: Update po
+        run: ninja -vC $BUILDDIR meson-$(basename ${{ github.repository }})-update-po
